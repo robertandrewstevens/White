@@ -1,0 +1,221 @@
+---
+title: "writing-better"
+author: "Robert A. Stevens"
+date: "March 20, 2015"
+output: html_document
+---
+
+http://www.johnmyleswhite.com/notebook/2013/01/24/writing-better-statistical-programs-in-r/
+
+## Writing Better Statistical Programs in R
+
+By John Myles White on 1.24.2013
+
+A while back a friend asked me for advice about speeding up some R code that they’d written. Because they were running an extensive Monte Carlo simulation of a model they’d been developing, the poor performance of their code had become an impediment to their work.
+
+After I looked through their code, it was clear that the performance hurdles they were stumbling upon could be overcome by adopting a few best practices for statistical programming. This post tries to describe some of the simplest best practices for statistical programming in R. Following these principles should make it easier for you to write statistical programs that are both highly performant and correct.
+
+## Write Out a DAG
+
+Whenever you’re running a simulation study, you should appreciate the fact that you are working with a probabilistic model. Even if you are primarily focused upon the deterministic components of this model, the presence of any randomness in the model means that all of the theory of probabilistic models applies to your situation.
+
+Almost certainly the most important concept in probabilistic modeling when you want to write efficient code is the notion of conditional independence. Conditional independence is important because many probabilistic models can be decomposed into simple pieces that can be computed in isolation. Although your model contains many variables, any one of these variables may depend upon only a few other variables in your model. If you can organize all of variables in your model based on their dependencies, it will be easier to exploit two computational tricks: vectorization and parallelization.
+
+Let’s go through an example. Imagine that you have the model shown below:
+
+    X  ∼ Normal(0, 1)
+    Y1 ∼ Uniform(X, X + 1)
+    Y2 ∼ Uniform(X – 1, X)
+    Z  ∼ Cauchy(Y1 + Y2, 1)
+
+In this model, the distribution of Y1 and Y2 depends only on the value of X. Similarly, the distribution of Z depends only on the values of Y1 and Y2. We can formalize this notion using a DAG, which is a directed acyclic graph that depicts which variables depend upon which other variables. It will help you appreciate the value of this format if you think of the arrows in the DAG below as indicating the flow of causality:
+
+Having this DAG drawn out for your model will make it easier to write efficient code, because you can generate all of the values of a variable V simultaneously once you’ve computed the values of the variables that V depends upon. In our example, you can generate the values of X for all of your different simulations at once and then generate all of the Y1’s and Y2’s based on the values of X that you generate. You can then exploit this stepwise generation procedure to vectorize and parallelize your code. I’ll discuss vectorization to give you a sense of how to exploit the DAG we’ve drawn to write faster code.
+
+## Vectorize Your Simulations
+
+Sequential dependencies are a major bottleneck in languages like R and Matlab that cannot perform loops efficiently. Looking at the DAG for the model shown able, you might think that you can’t get around writing a “for” loop to generate samples of this model because some of the variables need to be generated before others.
+
+But, in reality, each individual sample from this model is independent of all of the others. As such, you can draw all of the X’s for all of your different simulations using vectorized code. Below I show how this model could be implemented using loops and then show how this same model could be implemented using vectorized operations:
+
+## Loop Code
+
+```{r, comment=NA}
+run.sims <- function(n.sims) {
+
+  results <- data.frame()
+
+  for(sim in 1:n.sims) {
+    x <- rnorm(1, 0, 1)
+    y1 <- runif(1, x, x + 1)
+    y2 <- runif(1, x - 1, x)
+    z <- rcauchy(1, y1 + y2, 1)
+    df <- data.frame(
+      X = x, 
+      Y1 = y1, 
+      Y2 = y2, 
+      Z = z)
+    results <- rbind(results, df)
+	}
+ 
+	return(results)
+}
+ 
+b <- Sys.time()
+head(run.sims(5000))
+e <- Sys.time()
+e - b
+```
+
+## Vectorized Code
+
+```{r, comment=NA}
+run.sims <- function(n.sims) {
+  x <- rnorm(n.sims, 0, 1)
+	y1 <- runif(n.sims, x, x + 1)
+	y2 <- runif(n.sims, x - 1, x)
+	z <- rcauchy(n.sims, y1 + y2, 1)
+	results <- data.frame(
+    X = x, 
+    Y1 = y1, 
+    Y2 = y2, 
+    Z = z)
+ 
+	return(results)
+}
+ 
+b <- Sys.time()
+head(run.sims(5000))
+e <- Sys.time()
+e - b
+```
+
+The performance gains for this example are substantial when you move from the naive loop code to the vectorized code. (NB: There are also some gains from avoiding the repeated calls to rbind, although they are less important than one might think in this case.)
+
+We could go further and parallelize the vectorized code, but this can be tedious to do in R.
+
+## The Data Generation / Model Fitting Cycle
+
+Vectorization can make code in languages like R much more efficient. But speed is useless if you’re not generating correct output. For me, the essential test of correctness for a probabilistic model only becomes clear after I’ve written two complementary functions:
+
+1. A data generation function that produces samples from my model. We can call this function generate. The arguments to generate are the parameters of my model.
+(
+
+2. A model fitting function that estimates the parameters of my model based on a sample of data. We can call this function fit. The arguments to fit are the data points we generated using generate
+
+The value of these two functions is that they can be set up to feedback into one another in the cycle shown below:
+
+I feel confident in the quality of statistical code when these functions interact stably. If the parameters inferred in a single pass through this loop are close to the original inputs, then my code is likely to work correctly. This amounts to a specific instance of the following design pattern:
+
+    data <- generate(model, parameters)
+    inferred.parameters <- fit(model, data)
+    reliability <- error(model, parameters, inferred.parameters)
+
+To see this pattern in action, let’s step through a process of generating data from a normal distribution and then fitting a normal to the data we generate. You can think of this as a form of “currying” in which we hardcore the value of the parameter model:
+
+```{r, comment=NA}
+n.sims <- 100
+n.obs <- 100
+ 
+generate.normal <- function(parameters) {
+  return(rnorm(n.obs, parameters[1], parameters[2]))
+}
+ 
+fit.normal <- function(data) {
+	return(c(mean(data), sd(data)))
+}
+ 
+distance <- function(true.parameters, inferred.parameters) {
+	return((true.parameters - inferred.parameters)^2)
+}
+ 
+reliability <- data.frame()
+ 
+for (sim in 1:n.sims) {
+  parameters <- c(runif(1), runif(1))
+  data <- generate.normal(parameters)
+  inferred.parameters <- fit.normal(data)
+  recovery.error <- distance(parameters, inferred.parameters)
+  df <- data.frame(
+    True1 = parameters[1],
+    True2 = parameters[2],
+    Inferred1 = inferred.parameters[1],
+    Inferred2 = inferred.parameters[2],
+    Error1 = recovery.error[1],
+    Error2 = recovery.error[2])
+	reliability <- rbind(reliability, df)
+}
+head(reliability)
+```
+
+If you generate data this way, you will see that our inference code is quite reliable. And you can see that it becomes better if we set n.obs to a larger value like 100,000.
+
+I expect this kind of performance from all of my statistical code. I can’t trust the quality of either generate or fit until I see that they play well together. It is their mutual coherence that inspires faith.
+
+## General Lessons
+
+### Speed
+
+When writing code in R, you can improve performance by searching for every possible location in which vectorization is possible. Vectorization essentially replaces R’s loops (which are not efficient) with C’s loops (which are efficient) because the computations in a vectorized call are almost always implemented in a language other than R.
+
+### Correctness
+
+When writing code for model fitting in any language, you should always insure that your code can infer the parameters of models when given simulated data with known parameter values.
+
+Posted in Programming, Statistics | 6 Responses
+
+## 6 responses to “Writing Better Statistical Programs in R”
+
+*BenK 2.13.2013 at 9:15 am | Permalink*
+
+When discussing correctness, you should always ensure, not insure.
+
+*George 2.13.2013 at 9:55 am | Permalink*
+
+Hi. What do you use to draw your diagrams?
+
+*Rick Wicklin 2.13.2013 at 11:27 am | Permalink*
+
+Well said, as usual. I like the DAG suggestion. I’ve never seen that formally written out, but I think it will help people figure out how to vectorize their code.
+
+In work that I do with SAS customers, I hammer on “check correctness” again and again and again. In my forthcoming book on simulating data, I have a section called “Checking the Correctness of Simulated Data” in which I suggest the following concrete methods for univariate distributions:
+
+1. Sample Moments and Goodness-of-Fit Tests
+
+2. Overlay a Theoretical PMF on a Frequency Plot (for discrete random variables) or Overlay a Theoretical Density on a Histogram (for a continuous r.v.)
+
+3. The Quantile-Quantile Plot (and analogous plots for discrete r.v.)
+
+For MV distributions, you should at least check the sample moments and correlations and check the distributions of the marginals.
+
+Lastly, since your post is mostly focused on making simulations run faster, I offer these Eight Tips to Make Your Simulation Run Faster: 
+
+http://blogs.sas.com/content/iml/2012/06/06/tips-to-make-your-simulation-run-faster/
+
+*D L Dahly 2.14.2013 at 4:08 am | Permalink*
+
+Well written, to the point, and useful. Many thanks.
+
+*Clay 2.15.2013 at 7:32 am | Permalink*
+
+Thanks for this post! Very helpful. Just one little correction: in the vectorized code I believe the call to the rcauchy() function should be “rcauchy(n.sims, y1 + y2, 1)”
+
+*meh 2.15.2013 at 11:35 pm | Permalink*
+
+Your suggestion of fitting simulated data to ensure self-consistency in your model is excellent!
+
+In terms of vectorization, your advice for Matlab code is several years out of date. Recent versions of Matlab (since maybe 2007?) have a fairly good JIT compiler that considerably reduces the penalty of loops in Matlab functions. I’ve seen people spend a fair amount of time vectorizing code, only to receive a negligible improvement.
+
+In general, for any kind of optimization, you really have to profile your code first. Vectorization is time-consuming (and can be error-prone), and you want to spend your time on the pieces of code that matter, not those that don’t. In my code, Matlab is more often slowed down by poor array management than unvectorized for-loops (which are JIT-compiled). The times that I’ve really seen a dramatic improvement usually involve hoisting an entire loop into a C MEX function. But to do this, you have to *profile your code* and understand where it spends its time. It’s almost never where you initially think it is.
+
+In addition, the choice of algorithm is often a lot more important than the implementation. A few examples:
+
+1. In general, if your problem involves a sparse matrix, then making use of its sparsity will save you a lot more time than running vectorized functions on a dense matrix. Sometimes this is as easy as just using a sparse matrix data structure. Sometimes thought is required.
+
+2. In MC simulations of a distribution, both transformation and rejection algorithms can spend gobs of time in transcendental functions. Transformation methods to sample from exponential or normal distributions often call the ‘log’ function, which is quite expensive. Even vectorized calls to ‘log’ are expensive. Switching to a Ziggurat method, or choosing a rejection method with a fast envelope function can dramatically increase your performance. Profiling your code is pretty key to recognizing this situation.
+
+3. SDEs are often integrated using a forward-Euler method, which is a first-order integrator with rather strict limits on the timestep. Using a second-order integrator (for example, Stochastic Runge-Kutte in the Brownian dynamics literature) can dramatically increase the time step you can use, which directly reduces simulation time.
+
+4. For MCMC systems with a lot of correlation, the move set is particularly critical. If the move set is too local, the correlation between samples remains high for many MC moves, and convergence can be quite slow. Polymer-lattice models are notorious for this, and have led to quite creative “wormhole” and “corkscrew” move sets that avoid this pitfall while still obeying detailed-balance. In continuous systems, a related approach is to project the problem onto a non-local basis set using an integral transform (eg: Fourier or wavelet) and evolve the system in that basis.
+
+5. For MC integration, high-energy physics has developed a number of importance-sampling algorithms that can dramatically increase the convergence of MC integration. Numerical Recipes details a number of these.
