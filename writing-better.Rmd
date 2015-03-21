@@ -122,11 +122,11 @@ generate.normal <- function(parameters) {
 }
  
 fit.normal <- function(data) {
-	return(c(mean(data), sd(data)))
+  return(c(mean(data), sd(data)))
 }
  
 distance <- function(true.parameters, inferred.parameters) {
-	return((true.parameters - inferred.parameters)^2)
+  return((true.parameters - inferred.parameters)^2)
 }
  
 reliability <- data.frame()
@@ -143,7 +143,7 @@ for (sim in 1:n.sims) {
     Inferred2 = inferred.parameters[2],
     Error1 = recovery.error[1],
     Error2 = recovery.error[2])
-	reliability <- rbind(reliability, df)
+  reliability <- rbind(reliability, df)
 }
 head(reliability)
 ```
