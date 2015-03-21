@@ -1,0 +1,409 @@
+---
+title: "vectorized-and-devectorized-code"
+author: "Robert A. Stevens"
+date: "March 20, 2015"
+output: html_document
+---
+
+http://www.johnmyleswhite.com/notebook/2013/12/22/the-relationship-between-vectorized-and-devectorized-code/
+
+## The Relationship between Vectorized and Devectorized Code
+
+By John Myles White on 12.22.2013
+
+## Introduction
+
+Some people have come to believe that Julia’s vectorized code is unusably slow. To correct this misconception, I outline a naive benchmark below that suggests that Julia’s vectorized code is, in fact, noticeably faster than R’s vectorized code. When experienced Julia programmers suggest that newcomers should consider devectorizing code, we’re not trying to beat R’s speed — our vectorized code does that already. Instead, we’re trying to match C’s speed.
+
+As the examples below indicate, a little bit of devectorization goes a long way towards this loftier goal. In the specific examples I show, I find that:
+
+- Julia’s vectorized code is 2x faster than R’s vectorized code
+
+- Julia’s devectorized code is 140x faster than R’s vectorized code
+
+- Julia’s devectorized code is 1350x faster than R’s devectorized code
+
+## Examples of Vectorized and Devectorized Code in R
+
+Let’s start by contrasting two pieces of R code: a vectorized and a devectorized implementation of a trivial snippet of code that does repeated vector addition.
+
+First, we consider an example of idiomatic, vectorized R code:
+
+```{r, comment=NA}
+vectorized <- function() {
+  a <- c(1, 1)
+  b <- c(2, 2)
+  x <- c(NaN, NaN)
+
+  for (i in 1:1000000) {
+    x <- a + b
+  }
+
+  return()
+}
+
+time <- function (N) {
+  timings <- rep(NA, N)
+
+  for (itr in 1:N) {
+    start <- Sys.time()
+    vectorized()
+    end <- Sys.time()
+    timings[itr] <- end - start
+  }
+
+  return(timings)
+}
+
+mean(time(10))
+```
+
+This code takes, on average, 0.49 seconds per iteration to compute 1,000,000 vector additions.
+
+Having considered the vectorized implementation, we can then consider an unidiomatic devectorized implementation of the same operation in R:
+
+```{r, comment=NA}
+devectorized <- function() {
+  a <- c(1, 1)
+  b <- c(2, 2)
+  x <- c(NaN, NaN)
+
+  for (i in 1:1000000) {
+    for (index in 1:2) {
+      x[index] <- a[index] + b[index]
+    }
+  }
+
+  return()
+}
+
+time <- function (N) {
+  timings <- rep(NA, N)
+
+  for (itr in 1:N) {
+    start <- Sys.time()
+    devectorized()
+    end <- Sys.time()
+    timings[itr] <- end - start
+  }
+
+  return(timings)
+}
+
+mean(time(10))
+```
+
+This takes, on average, 4.72 seconds per iteration to compute 1,000,000 vector additions.
+
+## Examples of Vectorized and Devectorized Code in Julia
+
+Let’s now consider two Julia implementations of this same snippet of code. We’ll start with a vectorized implementation:
+
+    function vectorized()
+        a = [1.0, 1.0]
+        b = [2.0, 2.0]
+        x = [NaN, NaN]
+    
+        for i in 1:1000000
+            x = a + b
+        end
+    
+        return
+    end
+    
+    function time(N)
+        timings = Array(Float64, N)
+    
+        # Force compilation
+        vectorized()
+    
+        for itr in 1:N
+            timings[itr] = @elapsed vectorized()
+        end
+    
+        return timings
+    end
+    
+    mean(time(10))
+
+This takes, on average, 0.236 seconds per iteration to compute 1,000,000 vector additions.
+
+Next, let’s consider a devectorized implementation of this same snippet:
+
+    function devectorized()
+        a = [1.0, 1.0]
+        b = [2.0, 2.0]
+        x = [NaN, NaN]
+    
+        for i in 1:1000000
+            for index in 1:2
+                x[index] = a[index] + b[index]
+            end
+        end
+    
+        return
+    end
+    
+    function time(N)
+        timings = Array(Float64, N)
+    
+        # Force compilation
+        devectorized()
+    
+        for itr in 1:N
+            timings[itr] = @elapsed devectorized()
+        end
+    
+        return timings
+    end
+    
+    mean(time(10))
+
+This takes, on average, 0.0035 seconds per iteration to compute 1,000,000 vector additions.
+
+## Comparing Performance in R and Julia
+
+We can summarize the results of the four examples above in a single table:
+
+Approach      Language Average Time
+------------  -------- ------------
+Vectorized	  R	       0.49
+Devectorized	R	       4.72
+Vectorized	  Julia	   0.24
+Devectorized	Julia	   0.0035
+
+All of these examples were timed on my 2.9 GHz Intel Core i7 MacBook Pro. The results are quite striking: Julia is uniformly faster than R. And a very small bit of devectorization produces huge performance improvements. Of course, it would be nice if Julia’s compiler could optimize vectorized code as well as it optimizes devectorized code. But doing so requires a substantial amount of work.
+
+## Why is Optimizing Vectorized Code Hard?
+
+What makes automatic devectorization tricky to get right is that even minor variants of the snippet shown above have profoundly different optimization strategies. Consider, for example, the following two snippets of code:
+
+    function vectorized2()
+        a = [1.0, 1.0]
+        b = [2.0, 2.0]
+    
+        res = {}
+    
+        for i in 1:1000000
+            x = [rand(), rand()]
+            x += a + b
+            push!(res, x)
+        end
+    
+        return res
+    end
+    
+    function time(N)
+        timings = Array(Float64, N)
+    
+        # Force compilation
+        vectorized2()
+    
+        for itr in 1:N
+            timings[itr] = @elapsed vectorized2()
+        end
+    
+        return timings
+    end
+    
+    mean(time(10))
+
+This first snippet takes 1.29 seconds on average.
+
+    function devectorized2()
+        a = [1.0, 1.0]
+        b = [2.0, 2.0]
+    
+        res = {}
+    
+        for i in 1:1000000
+            x = [rand(), rand()]
+            for dim in 1:2
+                x[dim] += a[dim] + b[dim]
+            end
+            push!(res, x)
+        end
+    
+        return res
+    end
+    
+    function time(N)
+        timings = Array(Float64, N)
+    
+        # Force compilation
+        devectorized2()
+    
+        for itr in 1:N
+            timings[itr] = @elapsed devectorized2()
+        end
+    
+        return timings
+    end
+    
+    mean(time(10))
+
+This second snippet takes, on average, 0.27 seconds.
+
+The gap between vectorized and devectorized code is much smaller here because this second set of code snippets uses memory in a very different way than our original snippets did. In the first set of snippets, it was possible to entirely avoid allocating any memory for storing changes to x. The devectorized code for the first set of snippets explicitly made clear to the compiler that no memory needed to be allocated. The vectorized code did not make this clear. Making it clear that no memory needed to be allocated led to a 75x speedup. Explicitly telling the compiler what it can avoid spending time on goes a long way.
+
+In contrast, in the second set of snippets, a new chunk of memory has to be allocated for every x vector that gets created. And the result is that even the devectorized variant of our second snippet cannot offer much of a performance boost over its vectorized analogue. The devectorized variant is slightly faster because it avoids allocating any memory during the steps in which x has a and b added to it, but this makes less of a difference when there is still a lot of other work being done that cannot be avoided by devectorizing operations.
+
+This reflects a more general statement: the vectorization/devectorization contrast is only correlated, not causally related, with the actual performance characteristics of code. What matters for computations that take place on modern computers is the efficient utilization of processor cycles and memory. In many real examples of vectorized code, it is memory management, rather than vectorization per se, that is the core causal factor responsible for performance.
+
+## The Reversed Role of Vectorization in R and Julia
+
+Part of what makes it difficult to have a straightforward discussion about vectorization is that vectorization in R conflates issues that are logically unrelated. In R, vectorization is often done for both (a) readability and (b) performance. In Julia, vectorization is only used for readability; it is devectorization that offers superior performance.
+
+This confuses some people who are not familiar with the internals of R. It is therefore worth noting how one improves the speed of R code. The process of performance improvement is quite simple: one starts with devectorized R code, then replaces it with vectorized R code and then finally implements this vectorized R code in devectorized C code. This last step is unfortunately invisible to many R users, who therefore think of vectorization per se as a mechanism for increasing performance. Vectorization per se does not help make code faster. What makes vectorization in R effective is that it provides a mechanism for moving computations into C, where a hidden layer of devectorization can do its mgic.
+
+In other words, R is doing exactly what Julia is doing to get better performance. R’s vectorized code is simply a thin wrapper around completely devectorized C code. If you don’t believe me, go read the C code for something like R’s distance function, which involves calls to functions like the following:
+
+    static double R_euclidean(double *x, int nr, int nc, int i1, int i2) {
+        double dev, dist;
+        int count, j;
+    
+        count = 0;
+        dist = 0;
+        for(j = 0 ; j < nc ; j++) {
+        if(both_non_NA(x[i1], x[i2])) {
+            dev = (x[i1] - x[i2]);
+            if(!ISNAN(dev)) {
+            dist += dev * dev;
+            count++;
+            }
+        }
+        i1 += nr;
+        i2 += nr;
+        }
+        if(count == 0) return NA_REAL;
+        if(count != nc) dist /= ((double)count/nc);
+        return sqrt(dist);
+    }
+
+It is important to keep this sort of thing in mind: the term vectorization in R actually refers to a step in which you write devectorized code in C. Vectorization, per se, is a red herring when reasoning about performance.
+
+To finish this last point, let’s summarize the performance hierarchy for R and Julia code in a simple table:
+
+Worst Case	        Typical Case	        Best Case
+------------------- --------------------- ----------
+                    Julia Vectorized Code Julia Devectorized Code
+R Devectorized Code	R Vectorized Code     C Devectorized Code
+
+It is the complete absence of one column for Julia that makes it difficult to compare vectorization across the two languages. Nothing in Julia is as bad as R’s devectorized code. On the other end of the spectrum, the performance of Julia’s devectorized code simply has no point of comparison in pure R: it is more similar to the C code used to power R behind the scenes.
+
+## Conclusion
+
+Julia aims to (and typically does) provide vectorized code that is efficient as the vectorized code available in other high-level languages. What sets Julia apart is the possibility of writing, in pure Julia, high performance code that uses CPU and memory resources as effectively as can be done in C.
+
+In particular, vectorization and devectorization stand in the opposite relationship to one another in Julia as they do in R. In R, devectorization makes code unusably slow: R code must be vectorized to perform at an acceptable level. In contrast, Julia programmers view vectorized code as a convenient prototype that can be modified with some clever devectorization to produce production-performance code. Of course, we would like prototype code to perform better. But no popular language offers that kind of functionality. What Julia offers isn’t the requirement for devectorization, but the possibility of doing it in Julia itself, rather than in C.
+
+*Posted in Julia, Programming, Statistics | 5 Responses*
+
+## 5 responses to “The Relationship between Vectorized and Devectorized Code”
+
+Ahmadou Dicko 12.22.2013 at 2:08 pm | Permalink
+
+Great post, like many UseRs I also have Julia installed in my machine and I follow the development. I want to thank you for what you have already achieved, Julia is already a good platform to test some algorithm. However, I think that is unfair to compared Jit compiled Julia functions to simple R functions. So, I used the R package compiler and the story is different
+
+R side :
+vectorized timing on my machine 0.46 s  
+devectorized timing on my machine : 4.96 s  
+vectorized_cmp timing on my machine 0.11 s  
+devectorized_cmp timing on my machine : 0.95 s
+
+```{r, comment=NA}
+require(compiler)
+
+devectorized_cmp <- cmpfun(devectorized)
+
+time_cmp <- function (N) {
+  timings <- rep(NA, N)
+
+  for (itr in 1:N) {
+    start <- Sys.time()
+    devectorized_cmp()
+    end <- Sys.time()
+    timings[itr] <- end - start
+  }
+
+  return(timings)
+}
+
+mean(time_cmp(10))
+
+vectorized_cmp <- cmpfun(vectorized)
+
+time_cmp <- function (N) {
+  timings <- rep(NA, N)
+
+  for (itr in 1:N) {
+    start <- Sys.time()
+    vectorized_cmp()
+    end <- Sys.time()
+    timings[itr] <- end - start
+  }
+
+  return(timings)
+}
+
+mean(time_cmp(10))
+```
+
+Julia side
+
+vectorized timing on my machine : 0.16s  
+devectorized timing on my machine: 0.004s
+
+For this example the compiled vectorized R code is faster than vectorized Julia code (0.12 vs 0.16)and we can notice the 5 fold increase between devectorized R code and compiled devectorized R code.
+
+**Settings**
+
+R side
+
+```{r, comment=NA}
+sessionInfo()
+```
+
+Julia side
+
+    versioninfo()
+    # Julia Version 0.3.0-prerelease+604
+    # Commit b37deb6 (2013-12-20 17:36 UTC)
+    # Platform Info:
+    # System: Linux (x86_64-unknown-linux-gnu)
+    # WORD_SIZE: 64
+    # BLAS: libopenblas (USE64BITINT DYNAMIC_ARCH NO_AFFINITY)
+    # LAPACK: libopenblas
+    # LIBM: libopenlibm
+
+*John Myles White 12.22.2013 at 6:22 pm | Permalink*
+
+Hi Ahmadou,
+
+Thanks for your comments. I’m a little hesitant to get into discussions about fairness: I think they quickly stray into a normative debate that’s not informative. It’s quite interesting to know that the compiler package can offer non-trivial speedups, although, for me, that raises the question of why its use hasn’t already become a default component of the R 3.0 interpreter line.
+
+*Carl 12.22.2013 at 5:05 pm | Permalink*
+
+No surprises, this is a really good post. A few thoughts:
+
+1. I feel like some of this vectorized/devectorized noise is driven in part by an excessive emphasis on microbenchmarks. Your mileage may vary, but it’s pretty rare for a vectorized operation to be the bottleneck in my real-world code, enough so to make devectorizing worth it. Obviously, that’s a generalization, but I feel like this problem is more likely to show up in microbenchmarking exercises than in practice.
+
+2. As such, I think it’s still an open question as to what coding style is preferred when performance concerns are absent. You refer to vectorized functions as a “convenient prototype” used “only for readability.” Maybe I’m misreading you here, but I thnk this gives short shrift to the non-performance benefits of vectorized code. “Readability” is highly correlated with correctness and maintainability. Devectorized code can be hard to interpret and easy to introduce bugs into. But I have some sense that many Julia programmers are going to instinctively write imperative loops by default as a kind of premature optimization (and because of habits carried over from other languages).
+
+3. Your point about compilation challenges with vectorized code is super important. Ultimately, wouldn’t we like to have the best of both world—by having either a set of best practices for compiler-friendly vectorized code; or even explicit language features for providing hints to the compiler about how to deal with vectorized operations, and what sort of work it can avoid in memory allocation/copying/temporary arrays, etc.?
+
+The goal, I think, is to be able to write code mainly for humans, but with asides to the compiler that don’t overwhelm the declarative content of the code. I think the practice of continuously devolving one’s code into assembly is one that should be undertaken very reservedly.
+
+*John Myles White 12.22.2013 at 6:42 pm | Permalink*
+
+Thanks, Carl.
+
+(1) I agree with your sentiment that the bottleneck in most code is typically a small chunk that is trivially devectorizable. But that bottleneck is often hairy in cases like the backprop steps for a neural network.
+
+(2) My point about readability is that, despite our shared hopes, readability and performance are often in conflict. Vectorization is sometimes more readable (although it’s also sometimes inscrutably obscure), but its virtues need to be understood with more precision than has been common in the discussions I’ve seen around higher-level languages. As a result of traditional higher-level languages having made vectorization all important for achieving performance, I think vectorization’s value as an expressive idiom has come to be substantially overstated. I agree that Julia programmers may exhibit the opposite vice and come to overvalue explicit looping. We can only hope that we provide good enough tools to mitigate this overextension of devectorization.
+
+(3) We are actively debating mechanisms for expressing ideas about the role of memory in vectorized code. I think we will find a solution before 1.0 comes out, but I also think we have a few more months of debate left before we find something that’s sufficiently general to be worth deploying.
+
+*John Myles White 12.22.2013 at 6:44 pm | Permalink*
+
+For future reference, this post was never meant to have allowed comments. I’m glad to have had some interesting feedback, but I’ve shut off the comments going forward. This is in keeping with my previously expressed intention to remove comments from my blog (and my broader desire to see comments removed from most websites).
