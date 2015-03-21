@@ -57,8 +57,8 @@ run.sims <- function(n.sims) {
       Z = z)
     results <- rbind(results, df)
   }
- 
-	return(results)
+  
+  return(results)
 }
  
 b <- Sys.time()
@@ -80,8 +80,8 @@ run.sims <- function(n.sims) {
     Y1 = y1,
     Y2 = y2,
     Z = z)
- 
-	return(results)
+  
+  return(results)
 }
 
 b <- Sys.time()
