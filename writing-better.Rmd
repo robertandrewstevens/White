@@ -72,8 +72,8 @@ e - b
 ```{r, comment=NA}
 run.sims <- function(n.sims) {
   x <- rnorm(n.sims, 0, 1)
-	y1 <- runif(n.sims, x, x + 1)
-	y2 <- runif(n.sims, x - 1, x)
+  y1 <- runif(n.sims, x, x + 1)
+  y2 <- runif(n.sims, x - 1, x)
   z <- rcauchy(n.sims, y1 + y2, 1)
   results <- data.frame(
     X = x,
