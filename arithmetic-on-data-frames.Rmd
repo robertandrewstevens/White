@@ -1,0 +1,66 @@
+---
+title: "arithmetic-on-data-frames"
+author: "Robert A. Stevens"
+date: "March 21, 2015"
+output: html_document
+---
+
+http://www.johnmyleswhite.com/notebook/2014/07/21/that-way-madness-lies-arithmetic-on-data-frames/
+
+## That Way Madness Lies: Arithmetic on data.frames
+
+By John Myles White on 7.21.2014
+
+## tl;dr
+
+Please do not use arithmetic on data.frame objects when programming in R. It’s a hack that only works if you know everything about your datasets. If anything happens to change the order of the rows in your data set, previously safe data.frame arithmetic operations will produce incorrect answers. If you learn to always explicitly merge two tables together before performing arithmetic on their shared columns, you’ll produce code that is both more reliable and more powerful.
+
+## Arithmetic between tables: getting wrong answers quickly
+
+You may not be aware of it, but R allows you to do arithmetic on data.frame objects. For example, the following code works in R as of version 3.0.2:
+
+```{r, comment=NA}
+df1 <- data.frame(ID = c(1, 2), Obs = c(1.0, 2.0))
+df2 <- data.frame(ID = c(1, 2), Obs = c(2.0, 3.0))
+df3 <- (df1 + df2) / 2
+df3
+```
+
+If you discover that you can do this, you might think that it’s a really cool trick. You might even start using data.frame arithmetic without realizing that your specific example had a bunch of special structure that was directly responsible for you getting the right answer.
+
+Unfortunately, other examples that you didn’t see would have produced rather less pleasant outputs and led you to realize that arithmetic operations on data.frame objects don’t really make sense:
+
+```{r, comment=NA}
+df1 <- data.frame(ID = c(1, 2), Obs = c(1.0, 2.0))
+df2 <- data.frame(ID = c(2, 1), Obs = c(3.0, 2.0))
+df3 <- (df1 + df2) / 2
+df3
+```
+
+What happened here is obvious in retrospect: R added all of the columns together and then divided the result by two. The problem is that you didn’t actually want to add all of the columns together and then divide the result by two, because you had forgotten that the matching rows in df1 and df2 were not in the same index positions in the two tables.
+
+## Getting right answers with just a little more typing
+
+Thankfully, it turns out that doing the right thing just requires a few more characters. What you should have done was to call merge before doing any arithmetic:
+
+```{r, comment=NA}
+df1 <- data.frame(ID = c(1, 2), Obs = c(1.0, 2.0))
+df2 <- data.frame(ID = c(2, 1), Obs = c(3.0, 2.0))
+df3 <- merge(df1, df2, by = "ID")
+df3 <- transform(df3, AvgObs = (Obs.x + Obs.y) / 2)
+df3
+```
+
+What makes merge so unequivocally superior to data.frame arithmetic is that it still works when the two inputs have different numbers of rows:
+
+```{r, comment=NA}
+df1 <- data.frame(ID = c(1, 2), Obs = c(1.0, 2.0))
+df2 <- data.frame(ID = c(1, 2, 3), Obs = c(5.0, 6.0, 7.0))
+df3 <- merge(df1, df2, by = "ID")
+df3 <- transform(df3, AvgObs = (Obs.x + Obs.y) / 2)
+df3
+```
+
+## Knowledge is half the battle
+
+Now that you know why performing arithmetic operations on data.frame objects is generally unsafe, I implore you to stop doing it. Learn to love merge.
